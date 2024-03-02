@@ -50,7 +50,7 @@ class ProjectAgent:
     def __init__(self):
         self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
         self.path = os.path.join(os.getcwd(),'best_agent.pth')
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device('cpu')
         self.Q = DQN(6, 4).to(self.device)
         self.Q_target = deepcopy(self.Q)
         self.criterion = torch.nn.MSELoss()
