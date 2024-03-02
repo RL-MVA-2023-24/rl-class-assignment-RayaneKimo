@@ -2,13 +2,9 @@ from gymnasium.wrappers import TimeLimit
 from env_hiv import HIVPatient
 from gymnasium.wrappers import TimeLimit
 import numpy as np
-from tqdm import tqdm
-import random
 import os
 import torch
-import pickle
 from copy import deepcopy
-import torch.optim as optim
 import torch.nn as nn
 from env_hiv import HIVPatient
 from evaluate import evaluate_HIV, evaluate_HIV_population
