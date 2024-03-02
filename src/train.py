@@ -74,7 +74,7 @@ class ProjectAgent:
 
     def load(self):
         # Load the model state 
-        self.Q.load_state_dict(torch.load('best_agent.pth'), map_location=self.device)
+        self.Q.load_state_dict(torch.load('best_agent.pth', map_location=self.device))
         self.Q.eval().to(self.device) 
         self.Q_target =  deepcopy(self.Q).to(self.device)
 
