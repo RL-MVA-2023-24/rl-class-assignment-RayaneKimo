@@ -33,7 +33,7 @@ class ReplayBuffer:
 
     
 class ProjectAgent:
-    def __init__(self, model_name):
+    def __init__(self):
         self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
         self.path = os.path.join(os.getcwd(),'Best_model.pth')
         self.device = torch.device("cpu")
