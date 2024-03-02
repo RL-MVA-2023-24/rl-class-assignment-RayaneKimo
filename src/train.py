@@ -4,6 +4,7 @@ from gymnasium.wrappers import TimeLimit
 import numpy as np
 import os
 import torch
+import random
 from copy import deepcopy
 import torch.nn as nn
 from env_hiv import HIVPatient
@@ -30,53 +31,50 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-
-class DQN(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(DQN, self).__init__()
-        # Define your neural network structure here
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, output_dim)
-        )
-
-    def forward(self, x):
-        return self.network(x)
     
 class ProjectAgent:
-    def __init__(self):
+    def __init__(self, model_name):
         self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
-        self.path = os.path.join(os.getcwd(),'best_agent.pth')
-        self.device = torch.device('cpu')
-        self.Q = DQN(6, 4).to(self.device)
-        self.Q_target = deepcopy(self.Q)
+        self.path = os.path.join(os.getcwd(),'Best_model.pth')
+        self.device = torch.device("cpu")
+        print(self.device)
+        self.Q = self.build_nn([6,128,128,256,256,4]).to(self.device)
+        self.Q_target = deepcopy(self.Q).to(self.device)
         self.criterion = torch.nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=0.001)
-        self.replay_buffer = ReplayBuffer(capacity=1000000)
-        self.gamma = 0.95
+        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=0.005)
+        self.replay_buffer = ReplayBuffer(capacity=100000)
+        self.gamma = 0.90
         self.batch_size = 512
         self.eps_max = 1
         self.eps_min = 0.01
-        self.eps_decay = 18000
-        self.eps_delay = 15
+        self.eps_decay = 19000
+        self.eps_delay = 400
         self.eps_step = (self.eps_max-self.eps_min)/self.eps_decay
-        self.update_target_tau = 0.001
+#         self.update_target_tau = 0.001
+        self.network_sync_counter = 0 
+        
+    def build_nn(self, layer_sizes):
+        assert len(layer_sizes) > 1
+        layers = []
+        for index in range(len(layer_sizes)-1):
+            linear = nn.Linear(layer_sizes[index], layer_sizes[index+1])
+            act =    nn.ReLU() if index < len(layer_sizes)-2 else nn.Identity()
+            layers += (linear,act)
+        return nn.Sequential(*layers)
 
     def act(self, observation, use_random=False):
         return self.greedy_policy(observation)
 
     def save(self, path):
-        # Save the model state 
+        # Save the model state dictionary
         torch.save(self.Q.state_dict(), path)
 
     def load(self):
-        # Load the model state 
-        self.Q.load_state_dict(torch.load('best_agent.pth', map_location=self.device))
-        self.Q.eval().to(self.device) 
+        # Load the model state dictionary
+        self.Q.load_state_dict(torch.load("best_agent_DQN.pth", map_location=torch.device("cpu")))
         self.Q_target =  deepcopy(self.Q).to(self.device)
+        self.Q.eval().to(self.device) 
+        self.Q_target.eval().to(self.device)
 
 
     def greedy_policy(self, s):
@@ -98,7 +96,8 @@ class ProjectAgent:
         next_states = next_states.to(self.device)
 
         # Compute Q values for next states and take the max Q value along the actions dimension
-        QYmax = self.Q_target(next_states).max(1)[0].detach()
+        with torch.no_grad():
+            QYmax = self.Q_target(next_states).max(1)[0].detach()
 
         # Compute the target Q values for the current states
         target = rewards + self.gamma * QYmax
@@ -113,15 +112,9 @@ class ProjectAgent:
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        self.network_sync_counter += 1
 
-    def evaluate(self, best_score):
-                val_score = evaluate_HIV(agent = self, nb_episode=1)
-                print(f" == End of episode. Score: {'{:e}'.format(val_score)} ==")
-                if val_score > best_score:
-                    self.save('best_agent.pth')
-                    return val_score
-                return best_score
-    
+
     def train(self, num_episodes, max_episode_steps, disable_tqdm=False):
         episode_return = []
         episode = 0
@@ -147,33 +140,25 @@ class ProjectAgent:
                             self.Q.eval()
                             a = self.greedy_policy(s)
                         
-                        # Explore Once
                         s2, r, _, _, _ = self.env.step(a)
                         s2 = torch.tensor(s2, dtype=torch.float32, requires_grad = True).to(self.device)
 
                         # Push this experience to the replay buffer
                         self.replay_buffer.push(s, torch.tensor(a, dtype=torch.long).to(self.device), torch.tensor(r, dtype=torch.float32).to(self.device), s2)
                         episode_cum_reward += r
+                        s = s2
                         
-                        # Make a gradient step with random sampling
+                        if  self.network_sync_counter % 400 == 0:
+                            self.Q_target = deepcopy(self.Q)
+                        
                         self.gradient_step()
-                        
-                        # Update target
-                        target_state_dict = self.Q_target.state_dict()
-                        model_state_dict = self.Q.state_dict()
-                        tau = self.update_target_tau
-                        for key in model_state_dict:
-                            target_state_dict[key] = tau*model_state_dict[key] + (1-tau)*target_state_dict[key]
-                        self.Q_target.load_state_dict(target_state_dict)
                         
                         step += 1
                         
                         if t ==  max_episode_steps - 1 : 
                             print(f"Cumulated Rewards : {episode_cum_reward}")
                             episode_return.append(episode_cum_reward)
-                            episode_cum_reward = 0
-                        else : 
-                            s = s2
+                            episode_cum_reward = 0                            
             
 
                     print('3. Evaluating')
