@@ -9,6 +9,8 @@ import torch.nn as nn
 from evaluate import evaluate_HIV, evaluate_HIV_population
 
 
+# ======================== Buffer Storage ========================
+
 # Define the replay buffer class that will be used to store the experiences of the agent.
 # push : Add a new experience to the buffer
 # sample : Sample a batch of experiences from it
@@ -33,7 +35,8 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-    
+# ======================== Building the DQN Agent ========================
+
 # Define the agent class that will be used to train the agent
 # act : Select an action given the current state based on a greedy policy and trained Q function
 # save : Save the model to a file
@@ -59,7 +62,8 @@ class ProjectAgent:
         self.eps_step = (self.eps_max-self.eps_min)/self.eps_decay
         self.network_sync_counter = 0 
         self.sync_target_step = 300
-        
+    
+    # ====== Building the Neural Network function ======
     def build_nn(self, layer_sizes):
         assert len(layer_sizes) > 1
         layers = []
@@ -68,7 +72,8 @@ class ProjectAgent:
             act =    nn.ReLU() if index < len(layer_sizes)-2 else nn.Identity()
             layers += (linear,act)
         return nn.Sequential(*layers)
-
+    
+    # ====== Define the act, save and load functions ======
     def act(self, observation):
         return self.greedy_policy(observation)
 
@@ -83,12 +88,14 @@ class ProjectAgent:
         self.Q.eval().to(self.device) 
         self.Q_target.eval().to(self.device)
 
-
+    # ====== Define the greedy policy ========
     def greedy_policy(self, s):
         with torch.no_grad():
             Q = self.Q(torch.Tensor(s).unsqueeze(0).to(self.device))
             return torch.argmax(Q).item()
     
+    # ====== Define the Optimisation gradient step function ======
+        
     def gradient_step(self):
     # Ensure we have enough samples in the replay buffer
       if len(self.replay_buffer) > self.batch_size:
@@ -121,7 +128,8 @@ class ProjectAgent:
         self.optimizer.step()
         self.network_sync_counter += 1
 
-
+    # ====== Define the training function =========
+        
     def train(self, num_episodes, max_episode_steps,learning_rate, eps_delay,gamma,sync_target_step,eps_decay, disable_tqdm=False):
         # Set some variables when resuming training
         self.lr= learning_rate
@@ -193,6 +201,8 @@ class ProjectAgent:
                     self.evaluate()
         self.save(self.path)
         return episode_return
+
+    # ====== Define the agent evaluation function =========
 
     def evaluate(self):
                 val_score_agent = evaluate_HIV(agent = self, nb_episode=1)
