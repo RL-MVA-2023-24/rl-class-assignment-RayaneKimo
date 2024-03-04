@@ -1,16 +1,18 @@
 from gymnasium.wrappers import TimeLimit
 from env_hiv import HIVPatient
-from gymnasium.wrappers import TimeLimit
 import numpy as np
 import os
 import torch
 import random
 from copy import deepcopy
 import torch.nn as nn
-from env_hiv import HIVPatient
 from evaluate import evaluate_HIV, evaluate_HIV_population
 
 
+# Define the replay buffer class that will be used to store the experiences of the agent.
+# push : Add a new experience to the buffer
+# sample : Sample a batch of experiences from it
+# __len__ : Return the number of experiences in the buffer
 class ReplayBuffer:
     def __init__(self, capacity):
         self.capacity = capacity
@@ -32,26 +34,31 @@ class ReplayBuffer:
         return len(self.buffer)
 
     
+# Define the agent class that will be used to train the agent
+# act : Select an action given the current state based on a greedy policy and trained Q function
+# save : Save the model to a file
+# load : Load the best model 
+
 class ProjectAgent:
-    def __init__(self):
+    def __init__(self, model_name):
         self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
-        self.path = os.path.join(os.getcwd(),'Best_model.pth')
-        self.device = torch.device("cpu")
-        print(self.device)
+        self.path = os.path.join(os.getcwd(),f'{model_name}.pth')
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.lr = 0.0005
         self.Q = self.build_nn([6,128,128,256,256,4]).to(self.device)
         self.Q_target = deepcopy(self.Q).to(self.device)
         self.criterion = torch.nn.MSELoss()
-        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=0.005)
+        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=self.lr)
         self.replay_buffer = ReplayBuffer(capacity=100000)
-        self.gamma = 0.90
-        self.batch_size = 512
+        self.gamma = 0.98
+        self.batch_size = 800
         self.eps_max = 1
         self.eps_min = 0.01
         self.eps_decay = 19000
-        self.eps_delay = 400
+        self.eps_delay = 200
         self.eps_step = (self.eps_max-self.eps_min)/self.eps_decay
-#         self.update_target_tau = 0.001
         self.network_sync_counter = 0 
+        self.sync_target_step = 300
         
     def build_nn(self, layer_sizes):
         assert len(layer_sizes) > 1
@@ -62,7 +69,7 @@ class ProjectAgent:
             layers += (linear,act)
         return nn.Sequential(*layers)
 
-    def act(self, observation, use_random=False):
+    def act(self, observation):
         return self.greedy_policy(observation)
 
     def save(self, path):
@@ -105,7 +112,7 @@ class ProjectAgent:
         # Get the Q values for the chosen actions in the current states
         QXA = self.Q(states).gather(1, actions.to(torch.long).unsqueeze(1))
         
-        # Compute the loss between the current Q values and the target Q values
+        # Compute the loss between the current Q values and the target Q (gain) values
         loss = self.criterion(QXA, target.unsqueeze(1))
 
         # Perform a gradient descent step
@@ -115,42 +122,63 @@ class ProjectAgent:
         self.network_sync_counter += 1
 
 
-    def train(self, num_episodes, max_episode_steps, disable_tqdm=False):
+    def train(self, num_episodes, max_episode_steps,learning_rate, eps_delay,gamma,sync_target_step,eps_decay, disable_tqdm=False):
+        # Set some variables when resuming training
+        self.lr= learning_rate
+        self.optimizer = torch.optim.Adam(self.Q.parameters(), lr=self.lr)
+        self.eps_delay = eps_delay
+        self.gamma = gamma
+        self.eps_decay = eps_decay
+        self.sync_target_step = sync_target_step
+        self.eps_step = (self.eps_max-self.eps_min)/self.eps_decay
         episode_return = []
         episode = 0
         episode_cum_reward = 0
         epsilon = self.eps_max
         step = 0
-        best_score = 0
+        self.best_score_agent = 0
+        self.best_score_agent_dr = 0
         for episode in range(num_episodes):
                     print(f'********************** Episode : {episode}; Epsilon : {epsilon} **********************')
-
+                    
+                    # Renitialize the environment for different patient states to integrate variability
+                    if np.random.rand() < 0.4:
+                        self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
+                    else : 
+                        self.env = TimeLimit(env=HIVPatient(domain_randomization=True), max_episode_steps=200)
+                    
+                    # Reset the state at the begigning of each episode
                     s, _ = self.env.reset()
                     s = torch.tensor(s, dtype=torch.float32, requires_grad = True).to(self.device)
                     
+                    # Perform the training loop for each episode
                     for t in tqdm(range(max_episode_steps), disable=disable_tqdm, position=0, leave=True):
                         
+                        # Decay the epsilon value after a certain number of steps
                         if step > self.eps_delay:
                             epsilon = max(self.eps_min, epsilon - self.eps_step)
 
-                        # select epsilon-greedy action
+                        # Select epsilon-greedy action
                         if np.random.rand() < epsilon:
                             a = self.env.action_space.sample()
                         else:
                             self.Q.eval()
                             a = self.greedy_policy(s)
                         
+                        # Perform an exploration step in the environment
                         s2, r, _, _, _ = self.env.step(a)
                         s2 = torch.tensor(s2, dtype=torch.float32, requires_grad = True).to(self.device)
 
-                        # Push this experience to the replay buffer
+                        # Push this exploration to the replay buffer
                         self.replay_buffer.push(s, torch.tensor(a, dtype=torch.long).to(self.device), torch.tensor(r, dtype=torch.float32).to(self.device), s2)
                         episode_cum_reward += r
                         s = s2
                         
-                        if  self.network_sync_counter % 400 == 0:
+                        # Update the target network every sync_target_step steps
+                        if  self.network_sync_counter % self.sync_target_step == 0:
                             self.Q_target = deepcopy(self.Q)
                         
+                        # Perform a gradient descent step
                         self.gradient_step()
                         
                         step += 1
@@ -160,8 +188,23 @@ class ProjectAgent:
                             episode_return.append(episode_cum_reward)
                             episode_cum_reward = 0                            
             
-
+                    # Evaluate the agent after each episode
                     print('3. Evaluating')
-                    best_score = self.evaluate(best_score)
+                    self.evaluate()
         self.save(self.path)
         return episode_return
+
+    def evaluate(self):
+                val_score_agent = evaluate_HIV(agent = self, nb_episode=1)
+                print(f"score_agent: {'{:e}'.format(val_score_agent)}")
+                val_score_agent_dr: float = evaluate_HIV_population(agent=self, nb_episode=1)
+                print(f'score_agent_dr = {val_score_agent_dr:e}')
+                if val_score_agent > self.best_score_agent : 
+                    self.save('best_score_agent_DQN.pth')
+                    print("===== Saved Model for score agent record =====")
+                    self.best_score_agent = val_score_agent
+                    
+                if  val_score_agent_dr > self.best_score_agent_dr :
+                    self.save('best_score_agent_dr_DQN.pth')
+                    print("===== Saved Model for new agent dr record =====")
+                    self.best_score_agent_dr = val_score_agent_dr
