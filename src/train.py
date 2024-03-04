@@ -43,9 +43,9 @@ class ReplayBuffer:
 # load : Load the best model 
 
 class ProjectAgent:
-    def __init__(self, model_name):
+    def __init__(self):
         self.env = TimeLimit(env=HIVPatient(domain_randomization=False), max_episode_steps=200)
-        self.path = os.path.join(os.getcwd(),f'{model_name}.pth')
+        self.path = os.path.join(os.getcwd(),'Best_model.pth')
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.lr = 0.0005
         self.Q = self.build_nn([6,128,128,256,256,4]).to(self.device)
